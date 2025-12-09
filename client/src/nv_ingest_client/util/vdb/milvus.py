@@ -868,7 +868,7 @@ def create_bm25_model(
     return bm25_ef
 
 
-def stream_insert_milvus(records, client: MilvusClient, collection_name: str):
+def stream_insert_milvus(records, client: MilvusClient, collection_name: str, batch_size: int = 1):
     """
     This function takes the input records and creates a corpus,
     factoring in filters (i.e. texts, charts, tables) and fits
@@ -884,12 +884,16 @@ def stream_insert_milvus(records, client: MilvusClient, collection_name: str):
         Milvus client instance
     collection_name : str
         Milvus Collection to search against
+    batch_size : int, optional
+        Number of records to insert per HTTP call. Default is 1.
     """
     count = 0
-    for element in records:
-        client.insert(collection_name=collection_name, data=[element])
-        count += 1
-    logger.info(f"streamed {count} records")
+    total_records = len(records)
+    for i in range(0, total_records, batch_size):
+        batch = records[i : i + batch_size]
+        client.insert(collection_name=collection_name, data=batch)
+        count += len(batch)
+    logger.info(f"streamed {count} records in batches of {batch_size}")
 
 
 def write_to_nvingest_collection(
@@ -913,6 +917,7 @@ def write_to_nvingest_collection(
     meta_source_field=None,
     meta_fields=None,
     stream: bool = False,
+    stream_batch_size: int = 1,
     **kwargs,
 ):
     """
@@ -953,6 +958,8 @@ def write_to_nvingest_collection(
         Minio bucket name.
     stream : bool, optional
         When true, the records will be inserted into milvus using the stream insert method.
+    stream_batch_size : int, optional
+        Number of records to insert per HTTP call when using stream insert. Default is 1.
     """
     local_index = False
     connections.connect(uri=milvus_uri)
@@ -1006,6 +1013,7 @@ def write_to_nvingest_collection(
             cleaned_records,
             client,
             collection_name,
+            batch_size=stream_batch_size,
         )
     else:
         minio_client = Minio(minio_endpoint, access_key=access_key, secret_key=secret_key, secure=False)
@@ -1865,6 +1873,7 @@ class Milvus(VDB):
         meta_source_field: str = None,
         meta_fields: list[str] = None,
         stream: bool = False,
+        stream_batch_size: int = 1,
         threshold: int = 1000,
         **kwargs,
     ):
