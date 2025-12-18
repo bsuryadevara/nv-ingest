@@ -11,6 +11,7 @@ from typing import Dict
 from typing import List
 from typing import Tuple
 from typing import Union
+import typing
 from urllib.parse import urlparse
 
 import numpy as np
@@ -46,6 +47,31 @@ logger = logging.getLogger(__name__)
 
 CONSISTENCY = CONSISTENCY_BOUNDED
 MINIO_DEFAULT_BUCKET_NAME = "a-bucket"
+
+
+def _create_milvus_client(milvus_uri: str, milvus_client_kwargs: Dict = None) -> MilvusClient:
+    """
+    Creates a MilvusClient with optional connection parameters.
+
+    Parameters
+    ----------
+    milvus_uri : str
+        Milvus address with http(s) prefix and port, or a file path for milvus-lite.
+    milvus_client_kwargs : dict, optional
+        Connection parameters to pass to MilvusClient (e.g., token, timeout, db_name).
+        If 'token' is not provided, will check MILVUS_TOKEN env var.
+
+    Returns
+    -------
+    MilvusClient
+        Configured Milvus client instance.
+    """
+    client_kwargs = milvus_client_kwargs.copy() if milvus_client_kwargs else {}
+    if "token" not in client_kwargs:
+        env_token = os.environ.get("MILVUS_TOKEN")
+        if env_token:
+            client_kwargs["token"] = env_token
+    return MilvusClient(milvus_uri, **client_kwargs)
 
 pandas_reader_map = {
     ".json": pd.read_json,
@@ -87,8 +113,9 @@ def create_meta_collection(
     milvus_uri: str = "http://localhost:19530",
     collection_name: str = "meta",
     recreate=False,
+    milvus_client_kwargs: Dict = None,
 ):
-    client = MilvusClient(milvus_uri)
+    client = _create_milvus_client(milvus_uri, milvus_client_kwargs)
     if client.has_collection(collection_name) and not recreate:
         # already exists, dont erase and recreate
         return
@@ -114,6 +141,7 @@ def write_meta_collection(
     embedding_model: str = None,
     sparse_model: str = None,
     meta_collection_name: str = "meta",
+    milvus_client_kwargs: Dict = None,
 ):
     client_config = ClientConfigSchema()
     data = {
@@ -132,7 +160,7 @@ def write_meta_collection(
         },
         "user_fields": [field.name for field in fields],
     }
-    client = MilvusClient(milvus_uri)
+    client = _create_milvus_client(milvus_uri, milvus_client_kwargs)
     client.insert(collection_name=meta_collection_name, data=data)
 
 
@@ -172,11 +200,12 @@ def grab_meta_collection_info(
     embedding_model: str = None,
     embedding_dim: int = None,
     milvus_uri: str = "http://localhost:19530",
+    milvus_client_kwargs: Dict = None,
 ):
     timestamp = timestamp or ""
     embedding_model = embedding_model or ""
     embedding_dim = embedding_dim or ""
-    client = MilvusClient(milvus_uri)
+    client = _create_milvus_client(milvus_uri, milvus_client_kwargs)
     results = client.query_iterator(
         collection_name=meta_collection_name,
         output_fields=[
@@ -404,6 +433,7 @@ def create_nvingest_collection(
     gpu_search: bool = False,
     dense_dim: int = 2048,
     recreate_meta: bool = False,
+    **kwargs: typing.Any,
 ) -> CollectionSchema:
     """
     Creates a milvus collection with an nv-ingest compatible schema under
@@ -444,7 +474,7 @@ def create_nvingest_collection(
         if milvus_uri.endswith(".db"):
             local_index = True
 
-    client = MilvusClient(milvus_uri)
+    client = _create_milvus_client(milvus_uri, kwargs.get("milvus_client_kwargs"))
     schema = create_nvingest_schema(dense_dim=dense_dim, sparse=sparse, local_index=local_index)
     index_params = create_nvingest_index_params(
         sparse=sparse,
@@ -985,7 +1015,7 @@ def write_to_nvingest_collection(
     elif local_index and sparse:
         bm25_ef = BM25EmbeddingFunction(build_default_analyzer(language="en"))
         bm25_ef.load(bm25_save_path)
-    client = MilvusClient(milvus_uri)
+    client = _create_milvus_client(milvus_uri, kwargs.get("milvus_client_kwargs"))
     schema = Collection(collection_name).schema
     if isinstance(meta_dataframe, str):
         meta_dataframe = pandas_file_reader(meta_dataframe)
@@ -1297,7 +1327,7 @@ def nvingest_retrieval(
     model_name = model_name if model_name else client_config.embedding_nim_model_name
     local_index = False
     embed_model = NVIDIAEmbedding(base_url=embedding_endpoint, model=model_name, nvidia_api_key=nvidia_api_key)
-    client = MilvusClient(milvus_uri)
+    client = _create_milvus_client(milvus_uri, kwargs.get("milvus_client_kwargs"))
     final_top_k = top_k
     if nv_ranker:
         top_k = nv_ranker_top_k
@@ -1353,7 +1383,12 @@ def nvingest_retrieval(
     return results
 
 
-def remove_records(source_name: str, collection_name: str, milvus_uri: str = "http://localhost:19530"):
+def remove_records(
+    source_name: str,
+    collection_name: str,
+    milvus_uri: str = "http://localhost:19530",
+    milvus_client_kwargs: Dict = None,
+):
     """
     This function allows a user to remove chunks associated with an ingested file.
     Supply the full path of the file you would like to remove and this function will
@@ -1368,6 +1403,8 @@ def remove_records(source_name: str, collection_name: str, milvus_uri: str = "ht
     milvus_uri : str,
         Milvus address with http(s) preffix and port. Can also be a file path, to activate
         milvus-lite.
+    milvus_client_kwargs : dict, optional
+        Connection parameters for MilvusClient (e.g., token, timeout, db_name).
 
     Returns
     -------
@@ -1375,7 +1412,7 @@ def remove_records(source_name: str, collection_name: str, milvus_uri: str = "ht
         Dictionary with one key, `delete_cnt`. The value represents the number of entities
         removed.
     """
-    client = MilvusClient(milvus_uri)
+    client = _create_milvus_client(milvus_uri, milvus_client_kwargs)
     result_ids = client.delete(
         collection_name=collection_name,
         filter=f'(source["source_name"] == "{source_name}")',
@@ -1482,6 +1519,7 @@ def pull_all_milvus(
     write_dir: str = None,
     batch_size: int = 1000,
     include_embeddings: bool = False,
+    milvus_client_kwargs: Dict = None,
 ):
     """
     This function takes the input collection name and pulls all the records
@@ -1500,12 +1538,14 @@ def pull_all_milvus(
         The number of records to pull in each batch. Defaults to 1000.
     include_embeddings : bool, optional
         Whether to include the embeddings in the output. Defaults to False.
+    milvus_client_kwargs : dict, optional
+        Connection parameters for MilvusClient (e.g., token, timeout, db_name).
     Returns
     -------
     List
         List of records/files with records from the collection.
     """
-    client = MilvusClient(milvus_uri)
+    client = _create_milvus_client(milvus_uri, milvus_client_kwargs)
     output_fields = ["source", "content_metadata", "text"]
     if include_embeddings:
         output_fields.append("vector")
@@ -1875,6 +1915,7 @@ class Milvus(VDB):
         stream: bool = False,
         stream_batch_size: int = 1,
         threshold: int = 1000,
+        milvus_client_kwargs: Dict = None,
         **kwargs,
     ):
         """
@@ -1904,6 +1945,8 @@ class Milvus(VDB):
             meta_source_field (str, optional): The field in the metadata that serves as the source identifier.
                 Defaults to None.
             meta_fields (list[str], optional): A list of metadata fields to include. Defaults to None.
+            milvus_client_kwargs (Dict, optional): Additional connection parameters for MilvusClient
+                (e.g., timeout, db_name). Defaults to None.
             **kwargs: Additional keyword arguments for customization.
             stream (bool, optional): When true, the records will be inserted into milvus using the stream
                 insert method.
@@ -1911,6 +1954,7 @@ class Milvus(VDB):
         kwargs = locals().copy()
         kwargs.pop("self", None)
         super().__init__(**kwargs)
+        self._milvus_client_kwargs = milvus_client_kwargs
 
     def create_index(self, **kwargs):
         collection_name = kwargs.pop("collection_name")
@@ -1937,6 +1981,8 @@ class Milvus(VDB):
             "gpu_search": self.__dict__.get("gpu_search", True),
             "dense_dim": self.__dict__.get("dense_dim", 2048),
         }
+        if self._milvus_client_kwargs:
+            conn_dict["milvus_client_kwargs"] = self._milvus_client_kwargs
         return (self.collection_name, conn_dict)
 
     def get_write_params(self):
