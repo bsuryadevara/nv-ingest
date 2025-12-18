@@ -49,6 +49,29 @@ CONSISTENCY = CONSISTENCY_BOUNDED
 MINIO_DEFAULT_BUCKET_NAME = "a-bucket"
 
 
+def _get_milvus_connection_kwargs(milvus_client_kwargs: Dict = None) -> Dict:
+    """
+    Gets Milvus connection kwargs with token env var fallback.
+
+    Parameters
+    ----------
+    milvus_client_kwargs : dict, optional
+        Connection parameters (e.g., token, timeout, db_name).
+        If 'token' is not provided, will check MILVUS_TOKEN env var.
+
+    Returns
+    -------
+    Dict
+        Connection kwargs with token fallback applied.
+    """
+    client_kwargs = milvus_client_kwargs.copy() if milvus_client_kwargs else {}
+    if "token" not in client_kwargs:
+        env_token = os.environ.get("MILVUS_TOKEN")
+        if env_token:
+            client_kwargs["token"] = env_token
+    return client_kwargs
+
+
 def _create_milvus_client(milvus_uri: str, milvus_client_kwargs: Dict = None) -> MilvusClient:
     """
     Creates a MilvusClient with optional connection parameters.
@@ -66,12 +89,7 @@ def _create_milvus_client(milvus_uri: str, milvus_client_kwargs: Dict = None) ->
     MilvusClient
         Configured Milvus client instance.
     """
-    client_kwargs = milvus_client_kwargs.copy() if milvus_client_kwargs else {}
-    if "token" not in client_kwargs:
-        env_token = os.environ.get("MILVUS_TOKEN")
-        if env_token:
-            client_kwargs["token"] = env_token
-    return MilvusClient(milvus_uri, **client_kwargs)
+    return MilvusClient(milvus_uri, **_get_milvus_connection_kwargs(milvus_client_kwargs))
 
 pandas_reader_map = {
     ".json": pd.read_json,
@@ -464,8 +482,9 @@ def create_nvingest_collection(
         collection.
     """
     local_index = False
+    milvus_client_kwargs = kwargs.get("milvus_client_kwargs")
     if urlparse(milvus_uri).scheme:
-        connections.connect(uri=milvus_uri)
+        connections.connect(uri=milvus_uri, **_get_milvus_connection_kwargs(milvus_client_kwargs))
         server_version = utility.get_server_version()
         if "lite" in server_version:
             gpu_index = False
@@ -774,6 +793,7 @@ def bulk_insert_milvus(
     access_key: str = "minioadmin",
     secret_key: str = "minioadmin",
     bucket_name: str = "nv-ingest",
+    milvus_client_kwargs: Dict = None,
 ):
     """
     This function initialize the bulk ingest of all minio uploaded records, and checks for
@@ -790,10 +810,12 @@ def bulk_insert_milvus(
     milvus_uri : str,
         Milvus address with http(s) preffix and port. Can also be a file path, to activate
         milvus-lite.
+    milvus_client_kwargs : dict, optional
+        Connection parameters for Milvus (e.g., token, timeout, db_name).
     """
     minio_client = Minio(minio_endpoint, access_key=access_key, secret_key=secret_key, secure=False)
 
-    connections.connect(uri=milvus_uri)
+    connections.connect(uri=milvus_uri, **_get_milvus_connection_kwargs(milvus_client_kwargs))
     t_bulk_start = time.time()
     task_ids = []
     uploaded_files = []
@@ -992,7 +1014,8 @@ def write_to_nvingest_collection(
         Number of records to insert per HTTP call when using stream insert. Default is 1.
     """
     local_index = False
-    connections.connect(uri=milvus_uri)
+    milvus_client_kwargs = kwargs.get("milvus_client_kwargs")
+    connections.connect(uri=milvus_uri, **_get_milvus_connection_kwargs(milvus_client_kwargs))
     if urlparse(milvus_uri).scheme:
         server_version = utility.get_server_version()
         if "lite" in server_version:
@@ -1076,6 +1099,7 @@ def write_to_nvingest_collection(
             access_key,
             secret_key,
             bucket_name,
+            milvus_client_kwargs,
         )
         # fixes bulk insert lag time https://github.com/milvus-io/milvus/issues/21746
         client.refresh_load(collection_name)
