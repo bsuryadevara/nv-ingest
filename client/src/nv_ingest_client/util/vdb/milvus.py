@@ -53,6 +53,36 @@ pandas_reader_map = {
     ".pq": pd.read_parquet,
 }
 
+def create_milvus_client(
+    milvus_uri: str = "http://localhost:19530",
+    username: str = "",
+    password: str = "",
+    milvus_client_kwargs: Dict = None,
+) -> MilvusClient:
+    """
+    Create a MilvusClient with the specified configuration.
+
+    Parameters
+    ----------
+    milvus_uri : str
+        Milvus address with http(s) prefix and port, or a file path for milvus-lite.
+    username : str, optional
+        Milvus username.
+    password : str, optional
+        Milvus password.
+    milvus_client_kwargs : Dict, optional
+        Additional keyword arguments to pass to the MilvusClient.
+
+    Returns
+    -------
+    MilvusClient
+        Configured MilvusClient instance.
+    """
+    return MilvusClient(
+        milvus_uri,
+        token=f"{username}:{password}",
+        **(milvus_client_kwargs or {})
+    )
 
 def pandas_file_reader(input_file: str):
     path_file = Path(input_file)
@@ -172,12 +202,13 @@ def grab_meta_collection_info(
     milvus_uri: str = None,
     username: str = None,
     password: str = None,
+    milvus_client_kwargs: Dict = None
 ):
     timestamp = timestamp or ""
     embedding_model = embedding_model or ""
     embedding_dim = embedding_dim or ""
     if milvus_uri:
-        client = MilvusClient(milvus_uri, token=f"{username}:{password}")
+        client = create_milvus_client(milvus_uri, username, password, milvus_client_kwargs)
     results = client.query_iterator(
         collection_name=meta_collection_name,
         output_fields=[
@@ -415,6 +446,7 @@ def create_nvingest_collection(
     graph_degree: int = 100,
     m: int = 64,
     ef_construction: int = 512,
+    milvus_client_kwargs: Dict = None,
 ) -> CollectionSchema:
     """
     Creates a milvus collection with an nv-ingest compatible schema under
@@ -439,7 +471,8 @@ def create_nvingest_collection(
         Milvus username.
     password : str, optional
         Milvus password.
-
+    milvus_client_kwargs: Dict, optional
+        Additional keyword arguments to pass to the MilvusClient.
 
     Returns
     -------
@@ -458,7 +491,7 @@ def create_nvingest_collection(
         if milvus_uri.endswith(".db"):
             local_index = True
 
-    client = MilvusClient(milvus_uri, token=f"{username}:{password}")
+    client = create_milvus_client(milvus_uri, username, password, milvus_client_kwargs)
     schema = create_nvingest_schema(dense_dim=dense_dim, sparse=sparse, local_index=local_index)
     index_params = create_nvingest_index_params(
         sparse=sparse,
@@ -962,6 +995,7 @@ def write_to_nvingest_collection(
     username: str = None,
     password: str = None,
     no_wait_index: bool = False,
+    milvus_client_kwargs: Dict = None,
     **kwargs,
 ):
     """
@@ -1006,6 +1040,8 @@ def write_to_nvingest_collection(
         Milvus username.
     password : str, optional
         Milvus password.
+    milvus_client_kwargs: Dict, optional
+        Additional keyword arguments to pass to the MilvusClient.
     """
     local_index = False
     connections.connect(uri=milvus_uri, token=f"{username}:{password}")
@@ -1031,7 +1067,7 @@ def write_to_nvingest_collection(
     elif local_index and sparse:
         bm25_ef = BM25EmbeddingFunction(build_default_analyzer(language="en"))
         bm25_ef.load(bm25_save_path)
-    client = MilvusClient(milvus_uri, token=f"{username}:{password}")
+    client = create_milvus_client(milvus_uri, username, password, milvus_client_kwargs)
     schema = Collection(collection_name).schema
     if isinstance(meta_dataframe, str):
         meta_dataframe = pandas_file_reader(meta_dataframe)
@@ -1067,6 +1103,7 @@ def write_to_nvingest_collection(
             cleaned_records,
             client,
             collection_name,
+            batch_size=kwargs.get("batch_size", 5000)
         )
         if not local_index and not no_wait_index:
             # Make sure all rows are indexed, decided not to wrap in a timeout because we dont
@@ -1295,6 +1332,7 @@ def nvingest_retrieval(
     client: MilvusClient = None,
     username: str = None,
     password: str = None,
+    milvus_client_kwargs: Dict = None,
     **kwargs,
 ):
     """
@@ -1347,6 +1385,8 @@ def nvingest_retrieval(
         Milvus username.
     password : str, optional
         Milvus password.
+    milvus_client_kwargs: Dict, optional
+        Additional keyword arguments to pass to the MilvusClient.
     Returns
     -------
     List
@@ -1374,7 +1414,7 @@ def nvingest_retrieval(
         output_names=["embeddings"],
         grpc=not ("http" in urlparse(embedding_endpoint).scheme),
     )
-    client = client or MilvusClient(milvus_uri, token=f"{username}:{password}")
+    client = client or create_milvus_client(milvus_uri, username, password, milvus_client_kwargs)
     final_top_k = top_k
     if nv_ranker:
         top_k = nv_ranker_top_k
@@ -1465,7 +1505,7 @@ def remove_records(
         Dictionary with one key, `delete_cnt`. The value represents the number of entities
         removed.
     """
-    client = client or MilvusClient(milvus_uri, token=f"{username}:{password}")
+    client = client or create_milvus_client(milvus_uri, username, password)
     result_ids = client.delete(
         collection_name=collection_name,
         filter=f'(source["source_name"] == "{source_name}")',
@@ -1575,6 +1615,7 @@ def pull_all_milvus(
     username: str = None,
     password: str = None,
     client: MilvusClient = None,
+    milvus_client_kwargs: Dict = None,
 ):
     """
     This function takes the input collection name and pulls all the records
@@ -1599,12 +1640,14 @@ def pull_all_milvus(
         Milvus password.
     client : MilvusClient, optional
         Milvus client instance.
+    milvus_client_kwargs: Dict, optional
+        Additional keyword arguments to pass to the MilvusClient.
     Returns
     -------
     List
         List of records/files with records from the collection.
     """
-    client = client or MilvusClient(milvus_uri, token=f"{username}:{password}")
+    client = client or create_milvus_client(milvus_uri, username, password, milvus_client_kwargs)
     output_fields = ["source", "content_metadata", "text"]
     if include_embeddings:
         output_fields.append("vector")
@@ -1682,6 +1725,7 @@ def embed_index_collection(
     client: MilvusClient = None,
     username: str = None,
     password: str = None,
+    milvus_client_kwargs: Dict = None,
     **kwargs,
 ):
     """
@@ -1725,6 +1769,8 @@ def embed_index_collection(
             Milvus username.
         password : str, optional
             Milvus password.
+        milvus_client_kwargs: Dict, optional
+            Additional keyword arguments to pass to the MilvusClient.
         **kwargs: Additional keyword arguments for customization.
     """
     client_config = ClientConfigSchema()
@@ -1759,6 +1805,7 @@ def embed_index_collection(
         meta_fields=meta_fields,
         username=username,
         password=password,
+        milvus_client_kwargs=milvus_client_kwargs,
         **kwargs,
     )
     # running in parts
@@ -1836,6 +1883,7 @@ def reindex_collection(
     query_batch_size: int = 1000,
     input_type: str = "passage",
     truncate: str = "END",
+    milvus_client_kwargs: Dict = None,
     **kwargs,
 ):
     """
@@ -1877,6 +1925,8 @@ def reindex_collection(
         meta_fields (list[str], optional): A list of metadata fields to include. Defaults to None.
         embed_batch_size (int, optional): The batch size for embedding. Defaults to 256.
         query_batch_size (int, optional): The batch size for querying. Defaults to 1000.
+        milvus_client_kwargs: Dict, optional
+            Additional keyword arguments to pass to the MilvusClient.
         **kwargs: Additional keyword arguments for customization.
     """
     if vdb_op is not None and not isinstance(vdb_op, VDB):
@@ -1886,7 +1936,13 @@ def reindex_collection(
         kwargs.pop("vdb_op", None)
         return vdb_op.reindex(**kwargs)
     new_collection_name = new_collection_name if new_collection_name else collection_name
-    pull_results = pull_all_milvus(collection_name, milvus_uri, write_dir, query_batch_size)
+    pull_results = pull_all_milvus(
+        collection_name,
+        milvus_uri=milvus_uri,
+        write_dir=write_dir,
+        batch_size=query_batch_size,
+        milvus_client_kwargs=milvus_client_kwargs,
+    )
     embed_index_collection(
         pull_results,
         new_collection_name,
@@ -1916,6 +1972,7 @@ def reindex_collection(
         meta_fields=meta_fields,
         input_type=input_type,
         truncate=truncate,
+        milvus_client_kwargs=milvus_client_kwargs,
         **kwargs,
     )
 
@@ -1986,6 +2043,7 @@ class Milvus(VDB):
         username: str = None,
         password: str = None,
         no_wait_index: bool = False,
+        milvus_client_kwargs: Dict = None,
         **kwargs,
     ):
         """
@@ -2017,8 +2075,12 @@ class Milvus(VDB):
             meta_fields (list[str], optional): A list of metadata fields to include. Defaults to None.
             stream (bool, optional): When true, the records will be inserted into milvus using the stream
                 insert method.
+            threshold (int, optional): The number of records to insert at a time when using the stream
+                insert method. Defaults to 1000.
             username (str, optional): The username for Milvus authentication. Defaults to None.
             password (str, optional): The password for Milvus authentication. Defaults to None.
+            milvus_client_kwargs: Dict, optional
+                Additional keyword arguments to pass to the MilvusClient.
             **kwargs: Additional keyword arguments for customization.
         """
         kwargs = locals().copy()
@@ -2058,6 +2120,8 @@ class Milvus(VDB):
             "username": self.__dict__.get("username", None),
             "password": self.__dict__.get("password", None),
         }
+        if self.milvus_client_kwargs:
+            conn_dict["milvus_client_kwargs"] = self.milvus_client_kwargs
         return (self.collection_name, conn_dict)
 
     def get_write_params(self):
